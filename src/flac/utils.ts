@@ -1,4 +1,4 @@
-export async function readFileChunks(file: Deno.File, len: number) {
+export async function readFileChunks(file: Deno.Reader, len: number) {
   const blockData = new Uint8Array(len);
   let bytesRead = 0;
   while (bytesRead < len) {

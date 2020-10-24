@@ -8,34 +8,26 @@ export enum BlockType {
   PICTURE,
 }
 
-export interface MetadataBlockHeader {
-  blockType: BlockType;
-  byteOffset: number;
-  blockLen: number;
-}
-
 export abstract class MetadataBlock {
   static readonly MAX_SIZE = 16777215 as const;
   abstract readonly TYPE: BlockType;
-  protected rawData: Uint8Array;
-  protected rawView: DataView;
-
-  constructor(rawData: Uint8Array) {
-    this.rawData = rawData;
-    this.rawView = new DataView(
-      this.rawData.buffer,
-      this.rawData.byteOffset,
-      this.rawData.byteLength,
-    );
-    this.load();
-  }
-
-  protected abstract load(): void;
 
   abstract write(): Uint8Array;
 }
 
-export class StreamInfo extends MetadataBlock {
+interface StreamInfoI {
+  minBlockSize: number;
+  maxBlockSize: number;
+  minFrameSize: number;
+  maxFrameSize: number;
+  sampleRate: number;
+  nbChannels: number;
+  bitsPerSample: number;
+  totalSamples: bigint;
+  md5: Uint8Array;
+}
+
+export class StreamInfo extends MetadataBlock implements StreamInfoI {
   readonly TYPE = BlockType.STREAMINFO;
   minBlockSize!: number;
   maxBlockSize!: number;
@@ -47,37 +39,44 @@ export class StreamInfo extends MetadataBlock {
   totalSamples!: bigint;
   md5!: Uint8Array;
 
-  constructor(data: Uint8Array) {
-    super(data);
+  constructor(data: StreamInfoI) {
+    super();
+    Object.assign(this, data);
   }
 
-  protected load() {
-    this.minBlockSize = this.rawView.getUint16(0);
-    this.maxBlockSize = this.rawView.getUint16(2);
-    this.minFrameSize = (this.rawView.getUint16(4) << 8) +
-      this.rawView.getUint8(6);
-    this.maxFrameSize = (this.rawView.getUint16(7) << 8) +
-      this.rawView.getUint8(9);
+  static load(data: Uint8Array): StreamInfo {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
-    // 20 bits sample rate, 3 bits channels, 5 bits bps, 36 total samples
-    const sampleChannelsBpsTotal = this.rawView.getBigUint64(10);
+    const minBlockSize = view.getUint16(0);
+    const maxBlockSize = view.getUint16(2);
+    const minFrameSize = (view.getUint16(4) << 8) + view.getUint8(6);
+    const maxFrameSize = (view.getUint16(7) << 8) + view.getUint8(9);
 
-    const sample = sampleChannelsBpsTotal >> 44n;
-    const channels = (sampleChannelsBpsTotal >> 41n) & 0b111n;
-    const bps = (sampleChannelsBpsTotal >> 36n) & 0b11111n;
-    const total = (sampleChannelsBpsTotal) & 0xFFFFFFFFFn;
+    // 20 bits sample rate, 3 bits channels, 5 bits bps, 36 bits total samples
+    const sampleChannelsBpsTotal = view.getBigUint64(10);
 
-    this.sampleRate = Number(sample);
-    this.nbChannels = Number(channels) + 1;
-    this.bitsPerSample = Number(bps) + 1;
-    this.totalSamples = total;
+    const sampleRate = Number(sampleChannelsBpsTotal >> 44n);
+    const nbChannels = Number((sampleChannelsBpsTotal >> 41n) & 7n) + 1;
+    const bitsPerSample = Number((sampleChannelsBpsTotal >> 36n) & 31n) + 1;
+    const totalSamples = (sampleChannelsBpsTotal) & 0xFFFFFFFFFn;
+    const md5 = data.subarray(18);
 
-    this.md5 = this.rawData.subarray(18);
+    return new StreamInfo({
+      minBlockSize,
+      maxBlockSize,
+      minFrameSize,
+      maxFrameSize,
+      sampleRate,
+      nbChannels,
+      bitsPerSample,
+      totalSamples,
+      md5,
+    });
   }
 
   write() {
-    const buffer = new Uint8Array(34);
-    const view = new DataView(buffer.buffer);
+    const data = new Uint8Array(34);
+    const view = new DataView(data.buffer);
 
     view.setUint16(0, this.minBlockSize);
     view.setUint16(2, this.maxBlockSize);
@@ -96,22 +95,21 @@ export class StreamInfo extends MetadataBlock {
 
     view.setBigUint64(10, sampleChannelsBpsTotal);
 
-    buffer.set(this.md5, 18);
+    data.set(this.md5, 18);
 
-    return buffer;
+    return data;
   }
 }
 
 export class Padding extends MetadataBlock {
   readonly TYPE = BlockType.PADDING;
-  length!: number;
 
-  constructor(data: Uint8Array) {
-    super(data);
+  constructor(public length: number) {
+    super();
   }
 
-  protected load() {
-    this.length = this.rawData.length;
+  static load(data: Uint8Array): Padding {
+    return new Padding(data.length);
   }
 
   write() {
@@ -119,18 +117,32 @@ export class Padding extends MetadataBlock {
   }
 }
 
-export class Application extends MetadataBlock {
+interface ApplicationI {
+  appId: number;
+  appData: Uint8Array;
+}
+
+export class Application extends MetadataBlock implements ApplicationI {
   readonly TYPE = BlockType.APPLICATION;
   appId!: number;
   appData!: Uint8Array;
 
-  constructor(data: Uint8Array) {
-    super(data);
+  constructor(data: ApplicationI) {
+    super();
+    this.appId = data.appId;
+    this.appData = data.appData;
   }
 
-  protected load() {
-    this.appId = this.rawView.getUint32(0);
-    this.appData = this.rawData.subarray(4);
+  static load(data: Uint8Array): Application {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+    const appId = view.getUint32(0);
+    const appData = data.subarray(4);
+
+    return new Application({
+      appId,
+      appData,
+    });
   }
 
   write() {
@@ -149,22 +161,25 @@ interface Seekpoint {
 
 export class Seektable extends MetadataBlock {
   readonly TYPE = BlockType.SEEKTABLE;
-  seekpoints!: Seekpoint[];
 
-  constructor(data: Uint8Array) {
-    super(data);
+  constructor(public seekpoints: Seekpoint[]) {
+    super();
   }
 
-  protected load() {
-    this.seekpoints = [];
-    for (let i = 0; i < this.rawData.length; i += 18) {
+  static load(data: Uint8Array) {
+    const seekpoints: Seekpoint[] = [];
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+    for (let i = 0; i < data.length; i += 18) {
       const seekpoint: Seekpoint = {
-        samples: this.rawView.getBigUint64(i),
-        offset: this.rawView.getBigUint64(i + 8),
-        targetSamples: this.rawView.getUint16(i + 16),
+        samples: view.getBigUint64(i),
+        offset: view.getBigUint64(i + 8),
+        targetSamples: view.getUint16(i + 16),
       };
-      this.seekpoints.push(seekpoint);
+      seekpoints.push(seekpoint);
     }
+
+    return new Seektable(seekpoints);
   }
 
   write() {
@@ -183,47 +198,49 @@ export class Seektable extends MetadataBlock {
 
 export class VorbisComment extends MetadataBlock {
   readonly TYPE = BlockType.VORBIS_COMMENT;
-  vendorText!: string;
-  tags!: Map<string, string[]>;
-  constructor(data: Uint8Array) {
-    super(data);
+
+  constructor(public vendor: string, public tags: Map<string, string[]>) {
+    super();
   }
 
-  // https://xiph.org/vorbis/doc/v-comment.html
-  protected load() {
-    const vendorLen = this.rawView.getUint32(0, true);
+  static load(data: Uint8Array): VorbisComment {
+    // https://xiph.org/vorbis/doc/v-comment.html
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const vendorLen = view.getUint32(0, true);
     let offset = 4;
     const decoder = new TextDecoder();
 
-    this.vendorText = decoder.decode(
-      this.rawData.subarray(offset, offset + vendorLen),
+    const vendor = decoder.decode(
+      data.subarray(offset, offset + vendorLen),
     );
     offset += vendorLen;
 
-    const userCommentLen = this.rawView.getUint32(offset, true);
+    const userCommentLen = view.getUint32(offset, true);
     offset += 4;
 
-    this.tags = new Map<string, string[]>();
+    const tags = new Map<string, string[]>();
 
     for (let i = 0; i < userCommentLen; i++) {
-      const len = this.rawView.getUint32(offset, true);
+      const len = view.getUint32(offset, true);
       offset += 4;
       const text = decoder.decode(
-        this.rawData.subarray(offset, offset + len),
+        data.subarray(offset, offset + len),
       );
 
-      // deno-lint-ignore prefer-const
-      let [key, value] = text.split("=", 2);
-      key = key.toLowerCase();
+      const comment = text.split("=", 2);
+      const key = comment[0];
+      const value = comment[1].toLowerCase();
 
-      if (this.tags.has(key)) {
-        this.tags.get(key)!.push(value);
+      if (tags.has(key)) {
+        tags.get(key)!.push(value);
       } else {
-        this.tags.set(key, [value]);
+        tags.set(key, [value]);
       }
 
       offset += len;
     }
+
+    return new VorbisComment(vendor, tags);
   }
 
   write() {
@@ -238,7 +255,7 @@ export class VorbisComment extends MetadataBlock {
       }
     }
 
-    const vendorText = encoder.encode(this.vendorText);
+    const vendorText = encoder.encode(this.vendor);
 
     const blockData = new Uint8Array(
       4 + vendorText.length + 4 + (entries.length * 4) + entriesDataLen,
@@ -265,12 +282,13 @@ export class VorbisComment extends MetadataBlock {
 
 export class CueSheet extends MetadataBlock {
   readonly TYPE = BlockType.CUESHEET;
-  constructor(rawData: Uint8Array) {
-    super(rawData);
+  constructor(public rawData: Uint8Array) {
+    super();
   }
 
-  protected load() {
+  static load(data: Uint8Array): CueSheet {
     // Not implemented yet
+    return new CueSheet(data);
   }
 
   write() {
@@ -278,7 +296,18 @@ export class CueSheet extends MetadataBlock {
   }
 }
 
-export class Picture extends MetadataBlock {
+interface PictureI {
+  type: number;
+  mime: string;
+  description: string;
+  width: number;
+  height: number;
+  depth: number;
+  colors: number;
+  pictureRaw: Uint8Array;
+}
+
+export class Picture extends MetadataBlock implements PictureI {
   readonly TYPE = BlockType.PICTURE;
   type!: number;
   mime!: string;
@@ -289,43 +318,54 @@ export class Picture extends MetadataBlock {
   colors!: number;
   pictureRaw!: Uint8Array;
 
-  constructor(data: Uint8Array) {
-    super(data);
+  constructor(data: PictureI) {
+    super();
+    Object.assign(this, data);
   }
 
-  protected load() {
-    this.type = this.rawView.getUint32(0);
+  static load(data: Uint8Array): Picture {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+    const type = view.getUint32(0);
     let offset = 4;
 
-    const mimeLen = this.rawView.getUint32(offset);
+    const mimeLen = view.getUint32(offset);
     offset += 4;
 
-    this.mime = new TextDecoder().decode(
-      this.rawData!.subarray(offset, offset + mimeLen),
+    const mime = new TextDecoder().decode(
+      data.subarray(offset, offset + mimeLen),
     );
     offset += mimeLen;
 
-    const descLen = this.rawView.getUint32(offset);
+    const descLen = view.getUint32(offset);
     offset += 4;
-    this.description = new TextDecoder().decode(
-      this.rawData!.subarray(offset, offset + descLen),
+    const description = new TextDecoder().decode(
+      data.subarray(offset, offset + descLen),
     );
     offset += descLen;
 
-    this.width = this.rawView.getUint32(offset);
+    const width = view.getUint32(offset);
     offset += 4;
-    this.height = this.rawView.getUint32(offset);
+    const height = view.getUint32(offset);
     offset += 4;
-    this.depth = this.rawView.getUint32(offset);
+    const depth = view.getUint32(offset);
     offset += 4;
-    this.colors = this.rawView.getUint32(offset);
+    const colors = view.getUint32(offset);
     offset += 4;
-    const pictureLen = this.rawView.getUint32(offset);
+    const pictureLen = view.getUint32(offset);
     offset += 4;
-    this.pictureRaw = this.rawData.subarray(
-      offset,
-      offset + pictureLen,
-    );
+    const pictureRaw = data.subarray(offset, offset + pictureLen);
+
+    return new Picture({
+      type,
+      mime,
+      description,
+      width,
+      height,
+      depth,
+      colors,
+      pictureRaw,
+    });
   }
 
   write() {

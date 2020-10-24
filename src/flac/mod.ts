@@ -12,16 +12,13 @@ import {
 import { readFileChunks } from "./utils.ts";
 
 export class FLAC {
-  private file!: Deno.File;
   private filePath!: string;
+  private frameStart!: number;
   metadata!: MetadataBlock[];
   vorbis?: VorbisComment;
   info!: StreamInfo;
-  frameStart!: number;
 
-  private constructor(file: Deno.File) {
-    this.file = file;
-  }
+  private constructor(private file: Deno.File) {}
 
   static async open(filePath: string) {
     const file = await Deno.open(filePath, { read: true, write: true });
@@ -103,7 +100,7 @@ export class FLAC {
 
       switch (blockType) {
         case BlockType.STREAMINFO: {
-          block = new StreamInfo(blockData);
+          block = StreamInfo.load(blockData);
           if (this.info) {
             throw Error("FLAC file may have only one StreamInfo block.");
           }
@@ -111,19 +108,19 @@ export class FLAC {
           break;
         }
         case BlockType.PADDING: {
-          block = new Padding(blockData);
+          block = Padding.load(blockData);
           break;
         }
         case BlockType.APPLICATION: {
-          block = new Application(blockData);
+          block = Application.load(blockData);
           break;
         }
         case BlockType.SEEKTABLE: {
-          block = new Seektable(blockData);
+          block = Seektable.load(blockData);
           break;
         }
         case BlockType.VORBIS_COMMENT: {
-          block = new VorbisComment(blockData);
+          block = VorbisComment.load(blockData);
           if (this.vorbis) {
             throw Error("FLAC file may have only one VorbisComment block.");
           }
@@ -131,11 +128,11 @@ export class FLAC {
           break;
         }
         case BlockType.CUESHEET: {
-          block = new CueSheet(blockData);
+          block = CueSheet.load(blockData);
           break;
         }
         case BlockType.PICTURE: {
-          block = new Picture(blockData);
+          block = Picture.load(blockData);
           break;
         }
         default: {
