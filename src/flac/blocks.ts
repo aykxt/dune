@@ -228,8 +228,8 @@ export class VorbisComment extends MetadataBlock {
       );
 
       const comment = text.split("=", 2);
-      const key = comment[0];
-      const value = comment[1].toLowerCase();
+      const key = comment[0].toLowerCase();
+      const value = comment[1];
 
       if (tags.has(key)) {
         tags.get(key)!.push(value);

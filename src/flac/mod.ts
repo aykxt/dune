@@ -18,7 +18,7 @@ export class FLAC {
   vorbis?: VorbisComment;
   info!: StreamInfo;
 
-  private constructor(private file: Deno.File) {}
+  private constructor(private file: Deno.File) { }
 
   static async open(filePath: string) {
     const file = await Deno.open(filePath, { read: true, write: true });
@@ -136,7 +136,7 @@ export class FLAC {
           break;
         }
         default: {
-          throw new Error("Unsuuported Type");
+          throw new Error("Unsupported Blocktype");
         }
       }
       blocks.push(block);
